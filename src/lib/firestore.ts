@@ -1,6 +1,7 @@
 import {
   collection, doc, getDoc, getDocs, setDoc, query, orderBy, where, limit,
   onSnapshot, addDoc, updateDoc, deleteDoc, writeBatch, Timestamp, arrayUnion,
+  runTransaction,
 } from 'firebase/firestore';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut as firebaseSignOut } from 'firebase/auth';
@@ -319,6 +320,8 @@ export interface AttachedFile {
 
 export interface WorkEntry {
   id?: string;
+  /** Human-readable display number; Firestore auto-ID remains the primary key. */
+  entryNumber?: string;
   customerName: string;
   mobile: string;
   category: string;
@@ -386,6 +389,8 @@ export const addAdjustment = async (
   currentEntry: { totalAmount: number; paidAmount: number; netAdjustmentAmount?: number; netAdjustmentChallan?: number },
 ): Promise<void> => {
   if (!db) throw new Error('Firebase not configured');
+  const parent = await getDoc(doc(db, 'workEntries', entryId));
+  if (!parent.exists()) throw new Error('Cannot add adjustment: work entry does not exist');
   const now = Timestamp.now();
 
   await addDoc(collection(db, 'workAdjustments'), {
@@ -453,11 +458,40 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
   ) as Partial<T>;
 }
 
+const TRANSACTION_PREFIX: Record<TransactionType, string> = {
+  aeps: 'AEPS',
+  recharge: 'RCG',
+  transfer: 'TRF',
+  flight: 'FLT',
+  quickWork: 'QW',
+};
+
+const counterKeyFor = (kind: 'work' | TransactionType, year: number) =>
+  kind === 'work' ? `workEntries_${year}` : `${kind}_${year}`;
+
+/** Atomically reserves the next display number in config/counters. */
+async function allocateEntryNumber(kind: 'work' | TransactionType): Promise<string> {
+  if (!db) throw new Error('Firebase not configured');
+  const year = new Date().getFullYear();
+  const counterRef = doc(db, 'config', 'counters');
+  const key = counterKeyFor(kind, year);
+  const next = await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(counterRef);
+    const current = Number(snapshot.exists() ? snapshot.data()?.[key] ?? 0 : 0);
+    const value = current + 1;
+    transaction.set(counterRef, { [key]: value }, { merge: true });
+    return value;
+  });
+  const prefix = kind === 'work' ? 'WRK' : TRANSACTION_PREFIX[kind];
+  return `${prefix}-${year}-${String(next).padStart(5, '0')}`;
+}
+
 export const createWorkEntry = async (
-  data: Omit<WorkEntry, 'id' | 'dueAmount' | 'createdAt' | 'completedAt' | 'rejectedAt'>,
+  data: Omit<WorkEntry, 'id' | 'entryNumber' | 'dueAmount' | 'createdAt' | 'completedAt' | 'rejectedAt'>,
 ) => {
   if (!db) throw new Error("Firebase not configured");
   const now = Timestamp.now();
+  const entryNumber = await allocateEntryNumber('work');
   const dueAmount = data.status === 'Rejected' ? 0 : data.totalAmount - data.paidAmount;
   const timestamps: Partial<WorkEntry> = { createdAt: now };
   if (data.status === 'Completed') timestamps.completedAt = now;
@@ -475,6 +509,7 @@ export const createWorkEntry = async (
 
   return addDoc(collection(db, 'workEntries'), {
     ...rest,
+    entryNumber,
     ...timestamps,
     dueAmount,
     ...rejectionFields,
@@ -484,7 +519,7 @@ export const createWorkEntry = async (
 
 export const updateWorkEntry = async (
   id: string,
-  data: Partial<Omit<WorkEntry, 'id' | 'dueAmount' | 'createdAt' | 'completedAt' | 'rejectedAt'>>,
+  data: Partial<Omit<WorkEntry, 'id' | 'entryNumber' | 'dueAmount' | 'createdAt' | 'completedAt' | 'rejectedAt'>>,
   currentPaidAmount?: number
 ) => {
   if (!db) throw new Error("Firebase not configured");
@@ -592,32 +627,22 @@ export const subscribeToDeletedEntries = (callback: (entries: WorkEntry[]) => vo
 export const initCategoriesIfEmpty = async () => {
   if (!db) return;
   const firestoreDb = db;
-  const sentinelRef = doc(firestoreDb, 'settings', 'categoriesSeeded');
+  const sentinelRef = doc(firestoreDb, 'config', 'meta');
   const sentinel = await getDoc(sentinelRef);
   if (sentinel.exists()) return;
 
   const batch = writeBatch(firestoreDb);
   defaultCategories.forEach((name, order) => {
     const ref = doc(collection(firestoreDb, 'categories'));
-    batch.set(ref, { name, order });
+    batch.set(ref, { name, nameLower: name.trim().toLowerCase(), order });
   });
-  batch.set(sentinelRef, { seededAt: Timestamp.now() });
+  batch.set(sentinelRef, { categoriesSeededAt: Timestamp.now() }, { merge: true });
   try {
     await batch.commit();
   } catch {
     // concurrent init already ran
   }
 };
-
-function deduplicateCategories(cats: Category[]): Category[] {
-  const seen = new Set<string>();
-  return cats.filter(cat => {
-    const key = cat.name.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
 
 function sortCategories(cats: Category[]): Category[] {
   return cats.sort((a, b) => {
@@ -633,7 +658,7 @@ export const getCategories = async (): Promise<Category[]> => {
   const snap = await getDocs(collection(db, 'categories'));
   const cats: Category[] = [];
   snap.forEach(d => cats.push({ id: d.id, ...d.data() } as Category));
-  return sortCategories(deduplicateCategories(cats));
+  return sortCategories(cats);
 };
 
 export const subscribeToCategories = (callback: (categories: Category[]) => void) => {
@@ -641,7 +666,7 @@ export const subscribeToCategories = (callback: (categories: Category[]) => void
   return onSnapshot(collection(db, 'categories'), (snap) => {
     const cats: Category[] = [];
     snap.forEach(d => cats.push({ id: d.id, ...d.data() } as Category));
-    callback(sortCategories(deduplicateCategories(cats)));
+    callback(sortCategories(cats));
   }, (err) => {
     console.error('[Firestore] Categories listener error:', err.code, err.message);
   });
@@ -649,7 +674,12 @@ export const subscribeToCategories = (callback: (categories: Category[]) => void
 
 export const addCategory = async (name: string, order?: number) => {
   if (!db) throw new Error("Firebase not configured");
-  const data: { name: string; order?: number } = { name };
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Category name is required');
+  const nameLower = trimmed.toLowerCase();
+  const existing = await getDocs(query(collection(db, 'categories'), where('nameLower', '==', nameLower)));
+  if (!existing.empty) throw new Error(`Category "${trimmed}" already exists`);
+  const data: { name: string; nameLower: string; order?: number } = { name: trimmed, nameLower };
   if (order !== undefined) data.order = order;
   return addDoc(collection(db, 'categories'), data);
 };
@@ -669,148 +699,59 @@ export const deleteCategory = async (id: string) => {
   return deleteDoc(doc(db, 'categories', id));
 };
 
-/**
- * Delete every Firestore document in 'categories' whose name matches
- * (exact, case-sensitive). Used to clean up hidden duplicates so that
- * deleting a visible category removes ALL docs with that name.
- */
-export const deleteCategoriesByName = async (name: string) => {
-  if (!db) throw new Error("Firebase not configured");
-  const q = query(collection(db, 'categories'), where('name', '==', name));
-  const snap = await getDocs(q);
-  await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
-};
-
 // ─── SETTINGS ────────────────────────────────────────────────────────────────
 
 export const getShopSettings = async (): Promise<ShopSettings> => {
   if (!db) return { shopName: "AZAAN COMMUNICATION TOUR AND TRAVEL", address: "", phone: "" };
-  const d = await getDoc(doc(db, 'settings', 'shopSettings'));
+  const d = await getDoc(doc(db, 'config', 'shop'));
   if (d.exists()) return d.data() as ShopSettings;
   const def = { shopName: "AZAAN COMMUNICATION TOUR AND TRAVEL", address: "", phone: "" };
-  await setDoc(doc(db, 'settings', 'shopSettings'), def);
+  await setDoc(doc(db, 'config', 'shop'), def);
   return def;
 };
 
 export const updateShopSettings = async (data: ShopSettings) => {
   if (!db) throw new Error("Firebase not configured");
-  return setDoc(doc(db, 'settings', 'shopSettings'), data);
+  return setDoc(doc(db, 'config', 'shop'), data);
 };
 
-// ─── AEPS WITHDRAWALS ────────────────────────────────────────────────────────
+// ─── UNIFIED TRANSACTIONS ─────────────────────────────────────────────────────
 
-export interface AepsWithdrawal {
+export type TransactionType = 'aeps' | 'recharge' | 'transfer' | 'flight' | 'quickWork';
+
+export interface TransactionRecord {
   id?: string;
-  customerName: string;
-  bankName: string;
-  mobile?: string;
+  entryNumber: string;
+  type: TransactionType;
+  customerName?: string;
   amount: number;
   profitMargin: number;
+  paymentStatus: PaymentStatus;
   paymentMode?: PaymentMode;
-  paymentStatus?: PaymentStatus;
   settledVia?: SettlementMode;
-  settledAt?: Timestamp;
   settledBy?: string;
+  settledAt?: Timestamp;
   createdAt: Timestamp;
   addedBy: string;
+  isDeleted?: boolean;
+  details: Record<string, unknown>;
 }
 
-export const createAepsWithdrawal = async (data: Omit<AepsWithdrawal, 'id' | 'createdAt'>): Promise<void> => {
-  if (!db) throw new Error('Firebase not configured');
-  const paymentStatus: PaymentStatus = deriveStatus(data.paymentMode ?? 'Cash');
-  await addDoc(collection(db, 'aepsWithdrawals'), {
-    ...stripUndefined(data as Record<string, unknown>),
-    paymentStatus,
-    createdAt: Timestamp.now(),
-  });
-};
+export interface AepsWithdrawal extends Omit<TransactionRecord, 'type' | 'details'> {
+  bankName: string;
+  mobile?: string;
+}
 
-export const subscribeToAepsWithdrawals = (callback: (entries: AepsWithdrawal[]) => void) => {
-  if (!db) { callback([]); return () => {}; }
-  const q = query(collection(db, 'aepsWithdrawals'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    const entries: AepsWithdrawal[] = [];
-    snap.forEach(d => entries.push({ id: d.id, ...d.data() } as AepsWithdrawal));
-    callback(entries);
-  }, (err) => { console.error('[Firestore] aepsWithdrawals error:', err.code, err.message); callback([]); });
-};
-
-// ─── ELECTRIC RECHARGES ───────────────────────────────────────────────────────
-
-export interface ElectricRecharge {
-  id?: string;
-  customerName: string;
+export interface ElectricRecharge extends Omit<TransactionRecord, 'type' | 'details' | 'amount'> {
   consumerNumber: string;
   mobile?: string;
   rechargeAmount: number;
-  profitMargin: number;
-  paymentMode?: PaymentMode;
-  paymentStatus?: PaymentStatus;
-  settledVia?: SettlementMode;
-  settledAt?: Timestamp;
-  settledBy?: string;
-  createdAt: Timestamp;
-  addedBy: string;
 }
 
-export const createElectricRecharge = async (data: Omit<ElectricRecharge, 'id' | 'createdAt'>): Promise<void> => {
-  if (!db) throw new Error('Firebase not configured');
-  const paymentStatus: PaymentStatus = deriveStatus(data.paymentMode ?? 'Cash');
-  await addDoc(collection(db, 'electricRecharges'), {
-    ...stripUndefined(data as Record<string, unknown>),
-    paymentStatus,
-    createdAt: Timestamp.now(),
-  });
-};
-
-export const subscribeToElectricRecharges = (callback: (entries: ElectricRecharge[]) => void) => {
-  if (!db) return () => {};
-  const q = query(collection(db, 'electricRecharges'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    const entries: ElectricRecharge[] = [];
-    snap.forEach(d => entries.push({ id: d.id, ...d.data() } as ElectricRecharge));
-    callback(entries);
-  }, (err) => console.error('[Firestore] electricRecharges error:', err.message));
-};
-
-// ─── MONEY TRANSFERS ──────────────────────────────────────────────────────────
-
-export interface MoneyTransfer {
-  id?: string;
+export interface MoneyTransfer extends Omit<TransactionRecord, 'type' | 'details' | 'customerName'> {
   name: string;
   mobileOrAccount: string;
-  amount: number;
-  profitMargin: number;
-  paymentMode?: PaymentMode;
-  paymentStatus?: PaymentStatus;
-  settledVia?: SettlementMode;
-  settledAt?: Timestamp;
-  settledBy?: string;
-  createdAt: Timestamp;
-  addedBy: string;
 }
-
-export const createMoneyTransfer = async (data: Omit<MoneyTransfer, 'id' | 'createdAt'>): Promise<void> => {
-  if (!db) throw new Error('Firebase not configured');
-  const paymentStatus: PaymentStatus = deriveStatus(data.paymentMode ?? 'Cash');
-  await addDoc(collection(db, 'moneyTransfers'), {
-    ...stripUndefined(data as Record<string, unknown>),
-    paymentStatus,
-    createdAt: Timestamp.now(),
-  });
-};
-
-export const subscribeToMoneyTransfers = (callback: (entries: MoneyTransfer[]) => void) => {
-  if (!db) return () => {};
-  const q = query(collection(db, 'moneyTransfers'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    const entries: MoneyTransfer[] = [];
-    snap.forEach(d => entries.push({ id: d.id, ...d.data() } as MoneyTransfer));
-    callback(entries);
-  }, (err) => console.error('[Firestore] moneyTransfers error:', err.message));
-};
-
-// ─── QUICK ACTION WORK ───────────────────────────────────────────────────────
 
 export type QuickActionCategory =
   | 'Printout' | 'Lamination' | 'Xerox' | 'PVC' | 'Print' | 'Photo Print' | 'Other';
@@ -819,165 +760,213 @@ export const QUICK_ACTION_CATEGORIES: QuickActionCategory[] = [
   'Printout', 'Lamination', 'Xerox', 'PVC', 'Print', 'Photo Print', 'Other',
 ];
 
-export interface QuickActionEntry {
-  id?: string;
+export interface QuickActionEntry extends Omit<TransactionRecord, 'type' | 'details'> {
   category: QuickActionCategory;
-  customerName?: string;
-  amount: number;
-  paymentMode?: PaymentMode;
-  paymentStatus?: PaymentStatus;
-  settledVia?: SettlementMode;
-  settledAt?: Timestamp;
-  settledBy?: string;
-  createdAt: Timestamp;
-  addedBy: string;
 }
 
-export const createQuickAction = async (
-  data: Omit<QuickActionEntry, 'id' | 'createdAt'>,
+export interface FlightBooking extends Omit<TransactionRecord, 'type' | 'details'> {
+  flightFrom: string;
+  flightTo: string;
+  boardingDate: string;
+  actualFare: number;
+  amountCharged: number;
+}
+
+type TransactionView<T extends TransactionType> =
+  T extends 'aeps' ? AepsWithdrawal :
+  T extends 'recharge' ? ElectricRecharge :
+  T extends 'transfer' ? MoneyTransfer :
+  T extends 'flight' ? FlightBooking :
+  QuickActionEntry;
+
+function viewTransaction<T extends TransactionType>(id: string, data: Record<string, unknown>): TransactionView<T> {
+  const details = (data.details ?? {}) as Record<string, unknown>;
+  const base = { id, ...data };
+  if (data.type === 'aeps') return { ...base, bankName: details.bankName, mobile: details.mobile } as TransactionView<T>;
+  if (data.type === 'recharge') return { ...base, amount: data.amount, rechargeAmount: data.amount, consumerNumber: details.consumerNumber, mobile: details.mobile } as TransactionView<T>;
+  if (data.type === 'transfer') return { ...base, name: data.customerName, mobileOrAccount: details.mobileOrAccount } as TransactionView<T>;
+  if (data.type === 'flight') return { ...base, actualFare: details.actualFare, amountCharged: data.amount, flightFrom: details.flightFrom, flightTo: details.flightTo, boardingDate: details.boardingDate } as TransactionView<T>;
+  return { ...base, category: details.category } as TransactionView<T>;
+}
+
+export interface CreateTransactionInput {
+  customerName?: string;
+  amount: number;
+  profitMargin: number;
+  paymentMode?: PaymentMode;
+  addedBy: string;
+  details: Record<string, unknown>;
+}
+
+export const createTransaction = async (
+  type: TransactionType,
+  data: CreateTransactionInput,
 ): Promise<void> => {
   if (!db) throw new Error('Firebase not configured');
-  const paymentStatus: PaymentStatus = deriveStatus(data.paymentMode ?? 'Cash');
-  await addDoc(collection(db, 'quickActionWork'), {
-    ...stripUndefined(data as Record<string, unknown>),
+  const now = Timestamp.now();
+  const entryNumber = await allocateEntryNumber(type);
+  const paymentStatus = deriveStatus(data.paymentMode ?? 'Cash');
+  await addDoc(collection(db, 'transactions'), stripUndefined({
+    entryNumber,
+    type,
+    customerName: data.customerName,
+    amount: data.amount,
+    profitMargin: data.profitMargin,
     paymentStatus,
-    createdAt: Timestamp.now(),
+    paymentMode: data.paymentMode ?? 'Cash',
+    createdAt: now,
+    addedBy: data.addedBy,
+    isDeleted: false,
+    details: data.details,
+  } as Record<string, unknown>));
+};
+
+export const subscribeTransactions = <T extends TransactionType>(
+  type: T,
+  callback: (entries: Array<TransactionView<T>>) => void,
+  onError?: (err: Error) => void,
+) => {
+  if (!db) { callback([]); return () => {}; }
+  const q = query(
+    collection(db, 'transactions'),
+    where('type', '==', type),
+    where('isDeleted', '==', false),
+    orderBy('createdAt', 'desc'),
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map(d => viewTransaction<T>(d.id, d.data() as Record<string, unknown>)));
+  }, (err) => {
+    console.error(`[Firestore] transactions/${type} error:`, err.message);
+    onError?.(err);
+    callback([]);
   });
 };
+
+export const settleTransaction = async (
+  type: TransactionType,
+  transactionId: string,
+  mode: SettlementMode,
+  settledBy: string,
+): Promise<void> => {
+  if (!db) throw new Error('Firebase not configured');
+  const ref = doc(db, 'transactions', transactionId);
+  const existing = await getDoc(ref);
+  if (!existing.exists()) throw new Error('Cannot settle transaction: entry does not exist');
+  const data = existing.data() as Record<string, unknown>;
+  if (data.type !== type) throw new Error('Cannot settle transaction: type mismatch');
+  await updateDoc(ref, {
+    paymentStatus: 'paid' as PaymentStatus,
+    settledVia: mode,
+    settledAt: Timestamp.now(),
+    settledBy,
+  });
+};
+
+export const deleteTransaction = async (type: TransactionType, transactionId: string): Promise<void> => {
+  if (!db) throw new Error('Firebase not configured');
+  const ref = doc(db, 'transactions', transactionId);
+  const existing = await getDoc(ref);
+  if (!existing.exists()) throw new Error('Cannot delete transaction: entry does not exist');
+  if ((existing.data() as Record<string, unknown>).type !== type) throw new Error('Cannot delete transaction: type mismatch');
+  await updateDoc(ref, { isDeleted: true });
+};
+
+// Compatibility-shaped adapters keep the existing screens unchanged while all
+// reads and writes use the single transactions collection above.
+export const createAepsWithdrawal = async (
+  data: Omit<AepsWithdrawal, 'id' | 'createdAt' | 'entryNumber' | 'type' | 'details'>,
+) => createTransaction('aeps', {
+  customerName: data.customerName,
+  amount: data.amount,
+  profitMargin: data.profitMargin,
+  paymentMode: data.paymentMode,
+  addedBy: data.addedBy,
+  details: { bankName: data.bankName, mobile: data.mobile },
+});
+
+export const subscribeToAepsWithdrawals = (callback: (entries: AepsWithdrawal[]) => void) =>
+  subscribeTransactions('aeps', callback as (entries: Array<TransactionView<'aeps'>>) => void);
+
+export const createElectricRecharge = async (
+  data: Omit<ElectricRecharge, 'id' | 'createdAt' | 'entryNumber' | 'type' | 'details' | 'amount'>,
+) => createTransaction('recharge', {
+  customerName: data.customerName,
+  amount: data.rechargeAmount,
+  profitMargin: data.profitMargin,
+  paymentMode: data.paymentMode,
+  addedBy: data.addedBy,
+  details: { consumerNumber: data.consumerNumber, mobile: data.mobile },
+});
+
+export const subscribeToElectricRecharges = (callback: (entries: ElectricRecharge[]) => void) =>
+  subscribeTransactions('recharge', callback as (entries: Array<TransactionView<'recharge'>>) => void);
+
+export const createMoneyTransfer = async (
+  data: Omit<MoneyTransfer, 'id' | 'createdAt' | 'entryNumber' | 'type' | 'details'>,
+) => createTransaction('transfer', {
+  customerName: data.name,
+  amount: data.amount,
+  profitMargin: data.profitMargin,
+  paymentMode: data.paymentMode,
+  addedBy: data.addedBy,
+  details: { mobileOrAccount: data.mobileOrAccount },
+});
+
+export const subscribeToMoneyTransfers = (callback: (entries: MoneyTransfer[]) => void) =>
+  subscribeTransactions('transfer', callback as (entries: Array<TransactionView<'transfer'>>) => void);
+
+export const createQuickAction = async (
+  data: Omit<QuickActionEntry, 'id' | 'createdAt' | 'entryNumber' | 'type' | 'details'>,
+) => createTransaction('quickWork', {
+  customerName: data.customerName,
+  amount: data.amount,
+  profitMargin: data.amount,
+  paymentMode: data.paymentMode,
+  addedBy: data.addedBy,
+  details: { category: data.category },
+});
 
 export const subscribeToQuickActions = (
   callback: (entries: QuickActionEntry[]) => void,
   onError?: (err: Error) => void,
-) => {
-  if (!db) return () => {};
-  const q = query(collection(db, 'quickActionWork'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    const entries: QuickActionEntry[] = [];
-    snap.forEach(d => entries.push({ id: d.id, ...d.data() } as QuickActionEntry));
-    callback(entries);
-  }, (err) => {
-    console.error('[Firestore] quickActionWork error:', err.message);
-    onError?.(err);
-  });
-};
+) => subscribeTransactions('quickWork', callback as (entries: Array<TransactionView<'quickWork'>>) => void, onError);
 
-// ─── PAYMENT HISTORY ─────────────────────────────────────────────────────────
+export const createFlightBooking = async (
+  data: Omit<FlightBooking, 'id' | 'createdAt' | 'entryNumber' | 'type' | 'details'>,
+) => createTransaction('flight', {
+  customerName: data.customerName,
+  amount: data.amountCharged,
+  profitMargin: data.profitMargin,
+  paymentMode: data.paymentMode,
+  addedBy: data.addedBy,
+  details: {
+    flightFrom: data.flightFrom,
+    flightTo: data.flightTo,
+    boardingDate: data.boardingDate,
+    actualFare: data.actualFare,
+  },
+});
 
-export type PaymentHistoryEntryType = 'aeps' | 'recharge' | 'transfer' | 'quickWork' | 'work' | 'flight';
+export const subscribeToFlightBookings = (callback: (entries: FlightBooking[]) => void) =>
+  subscribeTransactions('flight', callback as (entries: Array<TransactionView<'flight'>>) => void);
 
-export interface PaymentHistoryRecord {
-  id?: string;
-  entryType: PaymentHistoryEntryType;
-  entryId: string;
-  amount: number;
-  mode: SettlementMode;
-  originalMode: 'Due';
-  settledAt: Timestamp;
-  settledBy: string;
-  customerName?: string;
-  category?: string;
-}
-
-const COLLECTION_MAP: Record<PaymentHistoryEntryType, string> = {
-  aeps: 'aepsWithdrawals',
-  recharge: 'electricRecharges',
-  transfer: 'moneyTransfers',
-  quickWork: 'quickActionWork',
-  work: 'workEntries',
-  flight: 'flightBookings',
-};
+export type PaymentHistoryEntryType = TransactionType | 'work';
 
 export const settlePendingEntry = async (
   entryType: PaymentHistoryEntryType,
   entryId: string,
   mode: SettlementMode,
   settledBy: string,
-  meta: {
-    amount: number;
+  _meta?: {
+    amount?: number;
     customerName?: string;
     category?: string;
   },
 ): Promise<void> => {
-  if (!db) throw new Error('Firebase not configured');
-  const now = Timestamp.now();
-
-  const colName = COLLECTION_MAP[entryType];
-  await updateDoc(doc(db, colName, entryId), {
-    paymentStatus: 'paid' as PaymentStatus,
-    settledVia: mode,
-    settledAt: now,
-    settledBy,
-  });
-
-  const record: Omit<PaymentHistoryRecord, 'id'> = {
-    entryType,
-    entryId,
-    amount: meta.amount,
-    mode,
-    originalMode: 'Due',
-    settledAt: now,
-    settledBy,
-    ...(meta.customerName ? { customerName: meta.customerName } : {}),
-    ...(meta.category ? { category: meta.category } : {}),
-  };
-  await addDoc(collection(db, 'paymentHistory'), record);
-};
-
-// ─── FLIGHT BOOKINGS ─────────────────────────────────────────────────────────
-
-export interface FlightBooking {
-  id?: string;
-  flightFrom: string;
-  flightTo: string;
-  boardingDate: string; // 'YYYY-MM-DD'
-  customerName: string;
-  actualFare: number;
-  amountCharged: number;
-  profitMargin: number; // auto-calculated: amountCharged - actualFare
-  paymentMode?: PaymentMode;
-  paymentStatus?: PaymentStatus;
-  settledVia?: SettlementMode;
-  settledAt?: Timestamp;
-  settledBy?: string;
-  createdAt: Timestamp;
-  addedBy: string;
-}
-
-export const createFlightBooking = async (data: Omit<FlightBooking, 'id' | 'createdAt'>): Promise<void> => {
-  if (!db) throw new Error('Firebase not configured');
-  const paymentStatus: PaymentStatus = deriveStatus(data.paymentMode ?? 'Cash');
-  await addDoc(collection(db, 'flightBookings'), {
-    ...stripUndefined(data as Record<string, unknown>),
-    paymentStatus,
-    createdAt: Timestamp.now(),
-  });
-};
-
-export const subscribeToFlightBookings = (callback: (entries: FlightBooking[]) => void) => {
-  if (!db) { callback([]); return () => {}; }
-  const q = query(collection(db, 'flightBookings'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    const entries: FlightBooking[] = [];
-    snap.forEach(d => entries.push({ id: d.id, ...d.data() } as FlightBooking));
-    callback(entries);
-  }, (err) => { console.error('[Firestore] flightBookings error:', err.code, err.message); callback([]); });
-};
-
-/** Subscribe to all payment history records, newest first. */
-export const subscribeToPaymentHistory = (
-  callback: (records: PaymentHistoryRecord[]) => void,
-  onError?: (err: Error) => void,
-) => {
-  if (!db) return () => {};
-  const q = query(collection(db, 'paymentHistory'), orderBy('settledAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    const records: PaymentHistoryRecord[] = [];
-    snap.forEach(d => records.push({ id: d.id, ...d.data() } as PaymentHistoryRecord));
-    callback(records);
-  }, (err) => {
-    console.error('[Firestore] paymentHistory error:', err.message);
-    onError?.(err);
-  });
+  if (entryType === 'work') {
+    throw new Error('Work entries use payment records for settlement');
+  }
+  await settleTransaction(entryType, entryId, mode, settledBy);
 };
 
 // ─── DOCUMENT / RECEIVING ATTACHMENTS ────────────────────────────────────────

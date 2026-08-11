@@ -187,6 +187,44 @@ export function arrayUnion(...values: any[]) {
   return { __kind: 'arrayUnion', values };
 }
 
+export async function runTransaction(
+  _db: FirestoreDB,
+  callback: (transaction: {
+    get: (ref: DocRef) => Promise<ReturnType<typeof makeDocSnapshot>>;
+    set: (ref: DocRef, data: DocData, options?: { merge?: boolean }) => void;
+    update: (ref: DocRef, data: DocData) => void;
+  }) => Promise<any>,
+) {
+  const pending: Array<{ type: 'set' | 'update'; ref: DocRef; data: DocData; options?: { merge?: boolean } }> = [];
+  const transaction = {
+    get: async (ref: DocRef) => makeDocSnapshot(ref),
+    set: (ref: DocRef, data: DocData, options?: { merge?: boolean }) => {
+      pending.push({ type: 'set', ref, data, options });
+    },
+    update: (ref: DocRef, data: DocData) => {
+      pending.push({ type: 'update', ref, data });
+    },
+  };
+  const result = await callback(transaction);
+  const touched = new Set<string>();
+  for (const op of pending) {
+    if (op.type === 'set') {
+      if (!store[op.ref.collectionName]) store[op.ref.collectionName] = {};
+      const next = stripUndefined(op.data);
+      store[op.ref.collectionName][op.ref.id] = op.options?.merge
+        ? { ...store[op.ref.collectionName][op.ref.id], ...next }
+        : next;
+    } else {
+      const existing = store[op.ref.collectionName]?.[op.ref.id];
+      if (existing) store[op.ref.collectionName][op.ref.id] = applyFieldValues(existing, stripUndefined(op.data));
+    }
+    touched.add(op.ref.collectionName);
+  }
+  persist();
+  touched.forEach(notifyCollection);
+  return result;
+}
+
 function applyFieldValues(target: DocData, updates: DocData): DocData {
   const out = { ...target };
   for (const [k, v] of Object.entries(updates)) {
@@ -257,6 +295,15 @@ function makeQuerySnapshot(results: Array<{ id: string; data: DocData }>) {
     size: docs.length,
     docs,
     forEach: (cb: (d: any) => void) => docs.forEach(cb),
+  };
+}
+
+function makeDocSnapshot(ref: DocRef) {
+  const data = store[ref.collectionName]?.[ref.id];
+  return {
+    id: ref.id,
+    exists: () => data !== undefined,
+    data: () => (data ? deepClone(data) : undefined),
   };
 }
 

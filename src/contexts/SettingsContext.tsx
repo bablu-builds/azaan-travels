@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { ShopSettings, getShopSettings, initCategoriesIfEmpty, getCategories, Category, subscribeToCategories, updateShopSettings, addCategory, deleteCategory, deleteCategoriesByName, reorderCategories as firestoreReorderCategories } from '@/lib/firestore';
+import { ShopSettings, getShopSettings, initCategoriesIfEmpty, getCategories, Category, subscribeToCategories, updateShopSettings, addCategory, deleteCategory, reorderCategories as firestoreReorderCategories } from '@/lib/firestore';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 
@@ -108,19 +108,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   };
 
   const removeCategory = async (id: string) => {
-    // Resolve the name for this category so we can delete ALL Firestore docs
-    // that share the same name.  This cleans up any hidden duplicates that
-    // were created by the previous optimistic-update race condition, which is
-    // what made delete appear to fail (deleting the visible doc exposed the
-    // hidden duplicate, which then re-appeared in the UI).
-    const cat = categories.find(c => c.id === id);
     try {
-      if (cat) {
-        await deleteCategoriesByName(cat.name);
-      } else {
-        // Fallback: delete just the specific document by id.
-        await deleteCategory(id);
-      }
+      await deleteCategory(id);
       // Do NOT optimistically update local state — the onSnapshot listener
       // will remove the deleted item(s) immediately.
       toast({ title: "Category Deleted" });

@@ -8,7 +8,7 @@ import { _seedDemoUser, _autoSignIn, _currentUser, User } from './firebase-auth'
 
 const SENTINEL_COLLECTION = '_demo_meta';
 const SENTINEL_DOC = 'seeded';
-const SEED_VERSION = 4;
+const SEED_VERSION = 5;
 
 export interface DemoCredentials {
   owner: { email: string; password: string };
@@ -52,14 +52,17 @@ export function seedDemo(): { owner: User; staff: User; alreadySeeded: boolean }
     },
   };
 
-  // Shop settings
-  store['settings'] = {
-    shopSettings: {
+  // New backend config documents
+  store['config'] = {
+    shop: {
       shopName: 'AZAAN COMMUNICATION TOUR AND TRAVEL',
       address: 'Main Road, Near Bus Stand, Katihar, Bihar 854105',
       phone: '+91 90000 12345',
     },
-    categoriesSeeded: { seededAt: tsFrom(30) },
+    meta: { categoriesSeededAt: tsFrom(30) },
+    counters: {
+      workEntries_2026: 0,
+    },
   };
 
   // Categories
@@ -70,8 +73,8 @@ export function seedDemo(): { owner: User; staff: User; alreadySeeded: boolean }
     'Railway/Bus Ticket Booking', 'Photocopy / Print / Photo', 'Other',
   ];
   store['categories'] = {};
-  for (const name of defaultCategories) {
-    store['categories'][id()] = { name };
+  for (const [order, name] of defaultCategories.entries()) {
+    store['categories'][id()] = { name, nameLower: name.toLowerCase(), order };
   }
 
   // Work entries (variety of statuses and dates)
@@ -125,52 +128,63 @@ export function seedDemo(): { owner: User; staff: User; alreadySeeded: boolean }
     store['workEntries'][id()] = entry;
   }
 
-  // Financial services (owner-facing extras)
-  store['aepsWithdrawals'] = {};
+  // Financial services use the single transactions collection.
+  store['transactions'] = {};
+  let transactionCounter = 0;
+  const addTransaction = (
+    type: 'aeps' | 'recharge' | 'transfer' | 'flight' | 'quickWork',
+    customerName: string | undefined,
+    amount: number,
+    profitMargin: number,
+    addedBy: string,
+    daysAgo: number,
+    details: Record<string, unknown>,
+    paymentMode: 'Cash' | 'Online' | 'Due' = 'Cash',
+  ) => {
+    transactionCounter += 1;
+    const year = new Date().getFullYear();
+    const prefixes = { aeps: 'AEPS', recharge: 'RCG', transfer: 'TRF', flight: 'FLT', quickWork: 'QW' };
+    store['transactions'][id()] = {
+      entryNumber: `${prefixes[type]}-${year}-${String(transactionCounter).padStart(5, '0')}`,
+      type,
+      ...(customerName ? { customerName } : {}),
+      amount,
+      profitMargin,
+      paymentMode,
+      paymentStatus: paymentMode === 'Due' ? 'pending' : 'paid',
+      addedBy,
+      isDeleted: false,
+      createdAt: tsFrom(daysAgo),
+      details,
+    };
+  };
+
   const aepsSamples = [
     { customerName: 'Rahul Kumar', bankName: 'SBI',        amount: 5000, profitMargin: 30, daysAgo: 0, addedBy: 'Azaan Owner' },
     { customerName: 'Priya Sharma',bankName: 'HDFC Bank',  amount: 3000, profitMargin: 20, daysAgo: 1, addedBy: 'Ravi Staff'  },
     { customerName: 'Amit Verma',  bankName: 'PNB',        amount: 8000, profitMargin: 40, daysAgo: 3, addedBy: 'Azaan Owner' },
   ];
   for (const a of aepsSamples) {
-    store['aepsWithdrawals'][id()] = {
-      customerName: a.customerName, bankName: a.bankName,
-      amount: a.amount, profitMargin: a.profitMargin,
-      paymentMode: 'Cash', addedBy: a.addedBy,
-      createdAt: tsFrom(a.daysAgo),
-    };
+    addTransaction('aeps', a.customerName, a.amount, a.profitMargin, a.addedBy, a.daysAgo, { bankName: a.bankName });
   }
 
-  store['electricRecharges'] = {};
   const elecSamples = [
     { customerName: 'Manoj Singh',  consumerNumber: '123456789', rechargeAmount: 500, profitMargin: 15, daysAgo: 1, addedBy: 'Ravi Staff'  },
     { customerName: 'Anjali Jain',  consumerNumber: '987654321', rechargeAmount: 1200,profitMargin: 25, daysAgo: 2, addedBy: 'Azaan Owner' },
   ];
   for (const e of elecSamples) {
-    store['electricRecharges'][id()] = {
-      customerName: e.customerName, consumerNumber: e.consumerNumber,
-      rechargeAmount: e.rechargeAmount, profitMargin: e.profitMargin,
-      paymentMode: 'Online', addedBy: e.addedBy,
-      createdAt: tsFrom(e.daysAgo),
-    };
+    addTransaction('recharge', e.customerName, e.rechargeAmount, e.profitMargin, e.addedBy, e.daysAgo, { consumerNumber: e.consumerNumber }, 'Online');
   }
 
-  store['moneyTransfers'] = {};
   const mtSamples = [
     { name: 'Sameer Ali',    mobileOrAccount: '9812309876', amount: 2000, profitMargin: 20, daysAgo: 1, addedBy: 'Azaan Owner' },
     { name: 'Deepak Mishra', mobileOrAccount: '9098765432', amount: 5000, profitMargin: 35, daysAgo: 2, addedBy: 'Ravi Staff'  },
   ];
   for (const m of mtSamples) {
-    store['moneyTransfers'][id()] = {
-      name: m.name, mobileOrAccount: m.mobileOrAccount,
-      amount: m.amount, profitMargin: m.profitMargin,
-      paymentMode: 'Cash', addedBy: m.addedBy,
-      createdAt: tsFrom(m.daysAgo),
-    };
+    addTransaction('transfer', m.name, m.amount, m.profitMargin, m.addedBy, m.daysAgo, { mobileOrAccount: m.mobileOrAccount });
   }
 
   // Quick Action Work — fast one-tap entries (no cost, amount == profit)
-  store['quickActionWork'] = {};
   const quickSamples = [
     { category: 'Printout',     customerName: 'Walk-in',       amount: 20,  addedBy: 'Ravi Staff',  daysAgo: 0 },
     { category: 'Xerox',        customerName: undefined,       amount: 10,  addedBy: 'Ravi Staff',  daysAgo: 0 },
@@ -184,13 +198,7 @@ export function seedDemo(): { owner: User; staff: User; alreadySeeded: boolean }
     { category: 'Lamination',   customerName: undefined,       amount: 25,  addedBy: 'Ravi Staff',  daysAgo: 5 },
   ];
   for (const q of quickSamples) {
-    store['quickActionWork'][id()] = {
-      category: q.category,
-      ...(q.customerName ? { customerName: q.customerName } : {}),
-      amount: q.amount,
-      addedBy: q.addedBy,
-      createdAt: tsFrom(q.daysAgo),
-    };
+    addTransaction('quickWork', q.customerName, q.amount, q.amount, q.addedBy, q.daysAgo, { category: q.category });
   }
 
   // Sentinel
