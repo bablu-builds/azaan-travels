@@ -97,7 +97,9 @@ export function seedDemo(): { owner: User; staff: User; alreadySeeded: boolean }
   ];
 
   store['workEntries'] = {};
+  let workEntryCounter = 0;
   for (const s of sample) {
+    workEntryCounter += 1;
     const createdAt = tsFrom(s.daysAgo);
     const due = s.status === 'Rejected' ? 0 : s.total - s.paid;
     const payments = s.paid > 0 ? [{
@@ -107,6 +109,7 @@ export function seedDemo(): { owner: User; staff: User; alreadySeeded: boolean }
       paymentMode: 'Cash',
     }] : [];
     const entry: any = {
+      entryNumber: `WRK-${new Date(now).getFullYear()}-${String(workEntryCounter).padStart(5, '0')}`,
       customerName: s.customerName,
       mobile: s.mobile,
       category: s.category,
@@ -127,6 +130,7 @@ export function seedDemo(): { owner: User; staff: User; alreadySeeded: boolean }
     }
     store['workEntries'][id()] = entry;
   }
+  store['config'].counters[`workEntries_${new Date(now).getFullYear()}`] = workEntryCounter;
 
   // Financial services use the single transactions collection.
   store['transactions'] = {};

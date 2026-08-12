@@ -633,8 +633,9 @@ export const initCategoriesIfEmpty = async () => {
 
   const batch = writeBatch(firestoreDb);
   defaultCategories.forEach((name, order) => {
-    const ref = doc(collection(firestoreDb, 'categories'));
-    batch.set(ref, { name, nameLower: name.trim().toLowerCase(), order });
+    const nameLower = name.trim().toLowerCase();
+    const ref = doc(firestoreDb, 'categories', encodeURIComponent(nameLower));
+    batch.set(ref, { name, nameLower, order });
   });
   batch.set(sentinelRef, { categoriesSeededAt: Timestamp.now() }, { merge: true });
   try {
@@ -677,11 +678,12 @@ export const addCategory = async (name: string, order?: number) => {
   const trimmed = name.trim();
   if (!trimmed) throw new Error('Category name is required');
   const nameLower = trimmed.toLowerCase();
-  const existing = await getDocs(query(collection(db, 'categories'), where('nameLower', '==', nameLower)));
-  if (!existing.empty) throw new Error(`Category "${trimmed}" already exists`);
   const data: { name: string; nameLower: string; order?: number } = { name: trimmed, nameLower };
   if (order !== undefined) data.order = order;
-  return addDoc(collection(db, 'categories'), data);
+  const categoryRef = doc(db, 'categories', encodeURIComponent(nameLower));
+  const existing = await getDoc(categoryRef);
+  if (existing.exists()) throw new Error(`Category "${trimmed}" already exists`);
+  return setDoc(categoryRef, data);
 };
 
 /** Batch-update the `order` field on each category document to persist a new sort order. */

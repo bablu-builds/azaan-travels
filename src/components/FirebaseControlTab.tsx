@@ -25,13 +25,11 @@ interface CollectionStat {
 
 const COLLECTIONS = [
   { name: 'workEntries', label: 'Work Entries' },
-  { name: 'aepsWithdrawals', label: 'AEPS Withdrawals' },
-  { name: 'electricRecharges', label: 'Electric Recharges' },
-  { name: 'moneyTransfers', label: 'Money Transfers' },
-  { name: 'quickActionWork', label: 'Quick Action Work' },
-  { name: 'paymentHistory', label: 'Payment History' },
+  { name: 'workAdjustments', label: 'Work Adjustments' },
+  { name: 'transactions', label: 'Transactions' },
   { name: 'users', label: 'Users' },
   { name: 'categories', label: 'Categories' },
+  { name: 'config', label: 'Configuration' },
 ];
 
 export default function FirebaseControlTab() {
@@ -231,7 +229,7 @@ export default function FirebaseControlTab() {
             {exporting ? 'Exporting…' : 'Export All Data (JSON)'}
           </Button>
           <p className="text-xs text-muted-foreground mt-2">
-            Exports: Work Entries, AEPS, Recharges, Transfers, Quick Work, Payment History, Users, Categories.
+             Exports: Work Entries, Adjustments, Transactions, Users, Categories, and Configuration.
           </p>
         </CardContent>
       </Card>

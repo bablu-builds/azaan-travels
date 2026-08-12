@@ -154,7 +154,11 @@ export default function WorkListPage() {
   const filteredAndSorted = useMemo(() => {
     const filtered = entries.filter(e => {
       const q = searchTerm.toLowerCase();
-      const matchSearch = !q || e.customerName.toLowerCase().includes(q) || e.mobile.includes(q) || e.category.toLowerCase().includes(q);
+      const matchSearch = !q
+        || (e.entryNumber ?? '').toLowerCase().includes(q)
+        || e.customerName.toLowerCase().includes(q)
+        || e.mobile.includes(q)
+        || e.category.toLowerCase().includes(q);
       const matchStatus = statusFilter === 'All' || e.status === statusFilter;
       const matchCat = categoryFilter === 'All' || e.category === categoryFilter;
       const matchDate = !dateInterval || isWithinInterval(e.date.toDate(), dateInterval);
@@ -232,7 +236,7 @@ export default function WorkListPage() {
           <div className="flex flex-col md:flex-row gap-3">
             <div className="relative flex-1">
               <Search className="absolute left-3.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Search name, mobile, or category..."
+               <Input placeholder="Search entry number, name, mobile, or category..."
                 value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10 h-10 bg-background" />
             </div>
@@ -369,6 +373,9 @@ export default function WorkListPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="font-medium text-foreground">{entry.customerName}</div>
+                      {entry.entryNumber && (
+                        <div className="text-[10px] font-mono text-muted-foreground mt-0.5">{entry.entryNumber}</div>
+                      )}
                       <button onClick={() => setSelectedMobile(entry.mobile)}
                         className="text-xs text-primary hover:underline flex items-center gap-1 mt-0.5">
                         <History className="h-3 w-3" />{entry.mobile}
