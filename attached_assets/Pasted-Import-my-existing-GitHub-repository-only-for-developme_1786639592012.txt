@@ -1,0 +1,74 @@
+Import my existing GitHub repository only for development and code work:
+
+https://github.com/bablu-builds/azaan-travels
+
+IMPORTANT:
+Replit must NOT manage, configure, authenticate, deploy, or modify my Firebase project.
+Replit must NOT manage GitHub Actions, GitHub Secrets, Firebase secrets, Firebase Authentication, Firestore, or Firebase Hosting.
+
+Architecture:
+- GitHub is the source of truth.
+- GitHub Actions handles CI/CD.
+- Firebase handles Authentication, Firestore, and Hosting.
+- Replit is ONLY a development environment.
+
+Your tasks:
+
+1. Import the existing GitHub repository:
+   https://github.com/bablu-builds/azaan-travels
+
+2. Inspect the entire existing project and understand the current architecture.
+
+3. Preserve the existing UI, routes, business logic, Firebase integration, and project structure unless a change is required to make the application work correctly.
+
+4. Do NOT create a new Firebase project.
+5. Do NOT change the Firebase project ID:
+   azaan-managment-dashboard
+6. Do NOT run Firebase deployment commands.
+7. Do NOT configure Firebase Hosting.
+8. Do NOT configure Firebase Authentication.
+9. Do NOT configure Firestore rules.
+10. Do NOT create or modify GitHub Actions.
+11. Do NOT create GitHub Secrets.
+12. Do NOT request passwords, OTPs, authorization codes, private keys, or Firebase service-account credentials.
+
+13. Inspect the existing Firebase integration and identify exactly which environment variables the application expects.
+
+14. Configure only local Replit development variables using Replit Secrets so the app can run with the REAL Firebase project.
+   The application must use:
+   VITE_DEMO_MODE=false
+
+15. Do not commit .env files, secrets, API credentials, private keys, or service-account files to GitHub.
+
+16. Verify the application connects to the real Firebase project instead of demo/mock/in-memory data.
+
+17. Verify Firebase Authentication login works with the existing application code.
+
+18. Verify Firestore reads and writes work with the existing application code.
+
+19. Do not change Firebase security rules from Replit.
+
+20. Run:
+   pnpm install
+   pnpm run build
+   pnpm dev
+
+21. Fix only application/code/build issues that prevent the project from working with the existing Firebase integration.
+
+22. Do not perform production deployment.
+
+23. Do not create a second Firebase project.
+
+24. Do not replace existing Firebase configuration with a different architecture.
+
+25. At the end, report:
+   - required Firebase environment variable names
+   - whether the app successfully connects to Firebase
+   - whether Authentication works
+   - whether Firestore reads/writes work
+   - build status
+   - any remaining issues that must be handled manually in Firebase Console or GitHub
+
+Remember:
+Firebase Console and GitHub are the production/control systems.
+Replit is only for development and testing.
