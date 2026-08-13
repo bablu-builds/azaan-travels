@@ -1,0 +1,106 @@
+FIX THE EXISTING PROJECT ONLY.
+
+Repository:
+https://github.com/bablu-builds/azaan-travels
+
+Important restrictions:
+- Do NOT ask for or add any Firebase secrets to Replit.
+- Do NOT ask for passwords, OTPs, API keys, service-account keys, private keys, or production credentials.
+- Do NOT modify Firebase Console settings.
+- Do NOT deploy to Firebase.
+- Do NOT modify GitHub Secrets.
+- Do NOT modify GitHub Actions unless I explicitly ask later.
+- Do NOT create a new Firebase project.
+- Do NOT change the existing Firebase project ID:
+  azaan-managment-dashboard
+- Do NOT change the existing application architecture.
+- Do NOT remove existing Firebase Authentication or Firestore functionality.
+- Do NOT switch the app permanently to demo/mock mode.
+
+Your task is to FIX THE CODE QUALITY AND TYPES ONLY.
+
+Known issue from the repository inspection:
+`pnpm run typecheck` currently fails with approximately 69 TypeScript errors across 8 files.
+
+Main error categories:
+1. Optional customer/contact fields
+2. Missing `paymentStatus` properties on financial transaction records
+3. Flight booking field/type mismatches
+4. Report export rows containing possibly undefined values
+5. Firestore transaction type conversion
+6. Related TypeScript strictness/type incompatibilities
+
+Required work:
+
+1. Inspect all current TypeScript errors using:
+   pnpm run typecheck
+
+2. Fix every TypeScript error properly at the source.
+   Do NOT suppress errors with:
+   - @ts-ignore
+   - @ts-nocheck
+   - disabling strict mode
+   - changing tsconfig to hide errors
+   - unsafe global type casts unless genuinely necessary
+
+3. Preserve all existing application behavior and UI.
+
+4. Make types accurately reflect the real data structures used by:
+   - customers
+   - contacts
+   - financial transactions
+   - work entries
+   - flight bookings
+   - reports
+   - Firestore documents
+
+5. Where fields are legitimately optional, handle undefined safely instead of forcing invalid values.
+
+6. Where fields are required, update the relevant interfaces/types and all usages consistently.
+
+7. Fix Firestore document conversion/type handling without changing the Firestore data model unless absolutely necessary.
+
+8. Make report/export code safely handle missing values.
+
+9. Fix flight booking field mismatches consistently across types, forms, Firestore reads, and UI.
+
+10. Preserve compatibility with the existing Firebase integration.
+
+11. Keep VITE_DEMO_MODE behavior unchanged:
+    - demo mode still works locally
+    - real Firebase mode remains supported
+    - do not require Firebase credentials to run typecheck/build
+
+12. After fixing the errors, run:
+
+    pnpm run typecheck
+    pnpm run build
+
+13. Both commands must complete successfully.
+
+14. Also run:
+
+    pnpm dev
+
+    Verify that the development server starts successfully in the existing demo/mock mode without Firebase secrets.
+
+15. Do not make unrelated UI or feature changes.
+
+16. Review all modified files for accidental breaking changes.
+
+17. Do not create .env files containing credentials.
+
+18. Do not commit any secrets.
+
+19. Do not deploy anything.
+
+20. When finished, provide:
+    - number of TypeScript errors before
+    - number after
+    - files changed
+    - confirmation that `pnpm run typecheck` passes
+    - confirmation that `pnpm run build` passes
+    - confirmation that `pnpm dev` starts successfully
+    - any remaining issues, if any
+
+If an error is ambiguous, inspect the surrounding data flow and choose the type-safe solution that best matches the existing application behavior rather than asking me for Firebase credentials.

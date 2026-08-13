@@ -1,0 +1,96 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function hasProfile() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function ownerOrManager() {
+      return hasProfile() && (profile().role == 'owner' || profile().role == 'manager');
+    }
+
+    function canManageWork() {
+      return ownerOrManager()
+        || (hasProfile() && profile().role == 'staff' && profile().canManageWork != false);
+    }
+
+    function canUseFinancialServices() {
+      return ownerOrManager()
+        || (hasProfile() && profile().canAccessFinancialServices == true);
+    }
+
+    function canUseQuickWork() {
+      return ownerOrManager()
+        || (hasProfile() && profile().canAccessQuickWork != false);
+    }
+
+    function canManageCategories() {
+      return ownerOrManager()
+        || (hasProfile() && profile().canManageCategories == true);
+    }
+
+    match /users/{userId} {
+      allow read: if hasProfile() && (request.auth.uid == userId || ownerOrManager());
+      // First account bootstrap: only the authenticated account can create
+      // itself as the initial owner. Staff/manager creation is owner-managed.
+      allow create: if (!exists(/databases/$(database)/documents/users/$(userId))
+        && request.auth.uid == userId
+        && request.resource.data.role == 'owner')
+        || ownerOrManager();
+      allow update: if ownerOrManager()
+        || (hasProfile() && request.auth.uid == userId);
+      allow delete: if ownerOrManager();
+    }
+
+    match /workEntries/{entryId} {
+      allow read: if hasProfile();
+      allow create, update: if canManageWork();
+      allow delete: if ownerOrManager();
+    }
+
+    match /workAdjustments/{adjustmentId} {
+      allow read: if hasProfile();
+      allow create: if canManageWork()
+        && request.resource.data.entryId is string
+        && exists(/databases/$(database)/documents/workEntries/$(request.resource.data.entryId));
+      allow update, delete: if ownerOrManager();
+    }
+
+    match /categories/{categoryId} {
+      allow read: if hasProfile();
+      allow create, update, delete: if canManageCategories();
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if hasProfile();
+      allow create: if (request.resource.data.type == 'quickWork'
+          && canUseQuickWork())
+        || (request.resource.data.type != 'quickWork'
+          && canUseFinancialServices());
+      allow update: if (resource.data.type == 'quickWork'
+          && canUseQuickWork())
+        || (resource.data.type != 'quickWork'
+          && canUseFinancialServices());
+      allow delete: if ownerOrManager();
+    }
+
+    match /config/{documentId} {
+      allow read: if hasProfile();
+      // Client-side yearly counters must be writable in the same atomic
+      // transaction that reserves an entry number.
+      allow create, update: if hasProfile()
+        && (documentId == 'counters' || ownerOrManager());
+      allow delete: if ownerOrManager();
+    }
+  }
+}

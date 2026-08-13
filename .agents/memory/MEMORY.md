@@ -1,0 +1,1 @@
+- [Firebase local development](firebase-local-development.md) — use mock mode locally; never request or store Firebase credentials in Replit.
